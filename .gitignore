@@ -1,0 +1,11 @@
+# Input data and generated outputs (download data separately, see docs/TASK.md)
+data/
+output/
+*.mp4
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
