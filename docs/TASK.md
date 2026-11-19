@@ -1,6 +1,6 @@
 # Task: UAV route reconstruction (It-Jims CV test task 2026)
 
-Full original description: [It-Jims_CV_test_task_2026.pdf](It-Jims_CV_test_task_2026.pdf)
+The original PDF from It-Jims is not stored in git (7 MB). Keep your own copy locally, e.g. in `Task/`.
 
 ## Goal
 

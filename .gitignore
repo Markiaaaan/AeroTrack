@@ -18,3 +18,18 @@ venv/
 # Local task materials (kept out of git)
 /Task/
 /Materials/
+
+# Task PDF (large, kept locally only; summary in docs/TASK.md)
+*.pdf
+
+# Generated results and test leftovers
+*.avi
+*.csv
+/route*.png
+/route*.jpg
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
