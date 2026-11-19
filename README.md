@@ -10,8 +10,7 @@ Needs Python 3.8+.
 pip install -r requirements.txt
 ```
 
-Download the input data ([Google Drive](https://drive.google.com/file/d/1h6xfYQfokDo5AzSv1Q-x66HluDpWSh87/view?usp=sharing)) and put it here.
-`data/` is git-ignored, so the images are never committed:
+The input data is included in `data/` (original source: [Google Drive](https://drive.google.com/file/d/1h6xfYQfokDo5AzSv1Q-x66HluDpWSh87/view?usp=sharing)):
 
 ```
 data/
