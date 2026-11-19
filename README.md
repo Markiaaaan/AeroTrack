@@ -37,10 +37,10 @@ python tools/make_test_video.py --map data/map.png --out data/test_flyover.mp4
 python main.py --map data/map.png --from-video data/test_flyover.mp4
 ```
 
-A real phone recording is included as `data/phone_flyover.mp4`. Its results (route image, positions and a side-by-side video of the phone view next to the map) are in `output/video/`:
+Three real phone recordings (no sound) are included as `data/phone_flyover_1.mp4` … `_3.mp4`. Their results (route image, positions and a side-by-side video of the phone view next to the map) are in `output/video_1/` … `video_3/`:
 
 ```bash
-python main.py --map data/map.png --from-video data/phone_flyover.mp4 --out output/video/route.png --video output/video/route.mp4
+python main.py --map data/map.png --from-video data/phone_flyover_1.mp4 --out output/video_1/route.png --video output/video_1/route.mp4
 ```
 
 ## How it works

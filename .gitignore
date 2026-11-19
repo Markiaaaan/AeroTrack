@@ -1,8 +1,8 @@
 # Generated outputs: only the main results in output/ are kept in git
 *.mp4
 !output/route.mp4
-!data/phone_flyover.mp4
-!output/video/route_side_by_side.mp4
+!data/phone_flyover_*.mp4
+!output/video_*/route_side_by_side.mp4
 video_frames/
 
 # Python
@@ -29,7 +29,7 @@ venv/
 *.avi
 *.csv
 !output/route.csv
-!output/video/route.csv
+!output/video_*/route.csv
 /route*.png
 /route*.jpg
 
