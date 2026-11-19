@@ -24,42 +24,40 @@ import cv2
 import numpy as np
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
+# Only files with these extensions are read from the frames folder
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
-MAX_MAP_SIDE = 4000  # downscale the map if it is larger than this (speed + memory)
-MAX_FRAME_SIDE = (
-    1000  # downscale video frames to this; phone 4K frames only add noise and time
-)
-SIFT_FEATURES = 20000  # how many SIFT points to keep on the map (the best ones)
-RATIO_TEST = (
-    0.75  # Lowe's ratio test: best match must be clearly better than the 2nd best
-)
-RANSAC_THRESHOLD = (
-    5.0  # a match further than this many map pixels from the model is an outlier
-)
-RETRY_BELOW_SCALE = (
-    0.5  # frame bigger than 2x its footprint -> failed frames are retried smaller
-)
-MIN_MATCHES = 12  # fewer good matches than this -> frame counts as "not found"
-MIN_INLIERS = 8  # fewer matches that agree with the homography -> "not found"
-MIN_INLIER_RATIO = (
-    0.15  # less than this share of matches agree -> the match is probably wrong
-)
-BLUR_RATIO = 0.35  # a video frame this much blurrier than a typical one is skipped
-OUTLIER_FACTOR = 3.0  # a jump longer than this many typical steps cannot be a real move
-OUTLIER_LOOKAHEAD = (
-    5  # a point may connect to any of the next 5 points (skips over bad ones)
-)
-MIN_STEP = (
-    10.0  # px; so a drone that hovers in place does not make every wobble an outlier
-)
-SIZE_RANGE = (
-    0.5,
-    2.0,
-)  # a footprint smaller/bigger than this times the typical one is wrong
-MAX_LABELS = 60  # with more points than this only every k-th point gets a number
-MAX_VIDEO_FOOTPRINTS = (
-    10  # a filmed frame covers a big area, so draw only a few footprints
-)
+# Downscale the map if it is larger than this (speed + memory)
+MAX_MAP_SIDE = 4000
+# Downscale video frames to this; phone 4K frames only add noise and time
+MAX_FRAME_SIDE = 1000
+# How many SIFT points to keep on the map (the best ones)
+SIFT_FEATURES = 20000
+# Lowe's ratio test: the best match must be clearly better than the 2nd best
+RATIO_TEST = 0.75
+# A match further than this many map pixels from the homography is an outlier
+RANSAC_THRESHOLD = 5.0
+# Frame bigger than 2x its footprint on the map -> failed frames are retried at half size
+RETRY_BELOW_SCALE = 0.5
+# Fewer good matches than this -> the frame counts as "not found"
+MIN_MATCHES = 12
+# Fewer matches that agree with the homography -> "not found"
+MIN_INLIERS = 8
+# Less than this share of matches agree -> the match is probably wrong
+MIN_INLIER_RATIO = 0.15
+# A video frame this much blurrier than a typical one is skipped
+BLUR_RATIO = 0.35
+# A jump to the next frame longer than this many typical steps is not a real move (outlier)
+OUTLIER_FACTOR = 3.0
+# Typical step = median of the steps within this many points before and after
+STEP_WINDOW = 10
+# px; the typical step is at least this, so a hovering drone's wobble is not an "outlier"
+MIN_STEP = 10.0
+# A footprint smaller / bigger than these times the typical one is a wrong match
+SIZE_RANGE = (0.5, 2.0)
+# With more points than this only every k-th point gets a number
+MAX_LABELS = 60
+# A filmed frame covers a big area, so draw only a few footprints
+MAX_VIDEO_FOOTPRINTS = 10
 
 REFERENCE_MAP_SIDE = 3645  # drawing sizes (text, lines) are tuned for a map this wide
 
@@ -146,7 +144,7 @@ def parse_args():
 def frame_label(path, i):
     """Label for a frame: the number in its file name (crop_25.png -> "25"), else its position."""
     numbers = re.findall(r"\d+", os.path.splitext(os.path.basename(path))[0])
-    return str(int(numbers[-1])) if numbers else str(i + 1)
+    return str(int(numbers[-1])) if numbers else str(i)
 
 
 def frames_from_folder(folder):
@@ -374,53 +372,59 @@ def drop_wrong_sizes(frames):
 def drop_outliers(frames):
     """Mark as failed any point that does not fit into the route.
 
-    Two points are "linked" if the drone could fly from one to the other: the distance is at
-    most OUTLIER_FACTOR typical steps (more if frames in between are missing). Each point is
-    linked to the next few points, so a bad point does not break the chain. The biggest group
-    of linked points is the route; everything else is a wrong match. Unlike comparing a point
-    with its direct neighbours, this never blames a good point for a bad neighbour.
+    The route is built as a chain: start at some point and walk forwards (then backwards)
+    through the sequence. A point joins the chain if the drone could have flown there from
+    the last point of the chain: at most one typical step per frame in between, plus
+    OUTLIER_FACTOR - 1 steps of slack. A point that does not fit is skipped, and the walk goes
+    on from the last good point, so one wrong match never hides its good neighbours.
+
+    Every point is tried as the start; the longest chain is the route and the points that are
+    not in it are wrong matches. The typical step is measured locally (around each point), so
+    a drone or phone that speeds up or slows down is judged by its own speed there.
     """
     idx = [i for i, r in enumerate(frames) if r["ok"]]
-    if len(idx) < 3:
+    # With fewer than 4 points nothing can be judged reliably: there is no "majority"
+    if len(idx) < 4:
         return
     pts = np.array([frames[i]["center"] for i in idx])
     # Position of every point in the sequence (file number, or place in the list);
-    # a missing crop_25 makes crop_24 -> crop_26 a jump of 2 steps
+    # a missing crop_25 makes crop_24 -> crop_26 two steps apart
     seq = np.array([frames[i].get("number", i) for i in idx])
+    # Length of each step, per frame (a jump over a missing frame counts as 2 steps)
     steps = np.linalg.norm(np.diff(pts, axis=0), axis=1) / np.maximum(1, np.diff(seq))
-    typical_step = np.median(steps)  # the median ignores the few bad jumps
+    # Typical step near each point: the median of the 2 * STEP_WINDOW steps around it. The
+    # median ignores the few long jumps to and from wrong matches. Near the start and the end
+    # the window is moved inwards instead of cut short, so it still holds enough good steps.
+    size = min(len(steps), 2 * STEP_WINDOW)
+    local = []
+    for k in range(len(pts)):
+        first = int(np.clip(k - STEP_WINDOW, 0, len(steps) - size))
+        local.append(max(MIN_STEP, np.median(steps[first : first + size])))
 
-    # Link points that are close enough, then give every point a group number (flood fill)
-    n = len(idx)
-    links = [[] for _ in range(n)]
-    for a in range(n):
-        for b in range(a + 1, min(n, a + 1 + OUTLIER_LOOKAHEAD)):
-            gap = max(1, seq[b] - seq[a])
-            max_jump = OUTLIER_FACTOR * max(MIN_STEP, typical_step * gap)
-            if np.linalg.norm(pts[b] - pts[a]) <= max_jump:
-                links[a].append(b)
-                links[b].append(a)
-    group = [-1] * n
-    for start in range(n):
-        if group[start] >= 0:
-            continue
-        todo = [start]
-        group[start] = start
-        while todo:
-            for b in links[todo.pop()]:
-                if group[b] < 0:
-                    group[b] = start
-                    todo.append(b)
+    def chain_from(start):
+        """Indexes of the points that fit into a chain that goes through point start."""
+        chain = [start]
+        for direction in (1, -1):  # forwards, then backwards
+            last = start
+            end = len(pts) if direction == 1 else -1
+            for k in range(start + direction, end, direction):
+                frames_apart = abs(seq[k] - seq[last])
+                max_jump = local[last] * (frames_apart + OUTLIER_FACTOR - 1)
+                if np.linalg.norm(pts[k] - pts[last]) <= max_jump:
+                    chain.append(k)
+                    last = k
+        return set(chain)
 
-    biggest = max(set(group), key=group.count)
-    for k in range(n):
-        if group[k] != biggest:
+    # The longest chain is the route; points that do not fit into it are wrong matches
+    route = max((chain_from(start) for start in range(len(pts))), key=len)
+    for k in range(len(pts)):
+        if k not in route:
             frames[idx[k]]["ok"] = False
             print(frames[idx[k]]["name"], "- does not fit the route (outlier), dropped")
 
 
-def smooth(pts, window=3):
-    """Moving average that removes small jitter.
+def smooth(pts, window):
+    """Moving average over `window` points that removes small jitter (used for video).
 
     Near the ends the window shrinks (it stays centred on the point), so the first and last
     points are never moved: START and FINISH stay where the drone really was.
@@ -652,17 +656,19 @@ def make_side_by_side(img, found, path, out, fps, half=(640, 480)):
         y, x = (half[1] - cam.shape[0]) // 2, (half[0] - cam.shape[1]) // 2
         left[y : y + cam.shape[0], x : x + cam.shape[1]] = cam
         cx, cy = half[0] // 2, half[1] // 2  # camera centre = drone position
-        cv2.drawMarker(left, (cx, cy), (0, 0, 255), cv2.MARKER_CROSS, 30, 3)
-        cv2.putText(left, f"camera {f['label']}", (10, 30), FONT, 0.8, (0, 255, 255), 2)
+        cv2.drawMarker(left, (cx, cy), COLORS["route"], cv2.MARKER_CROSS, 30, 3)
+        put_text(left, f"camera {f['label']}", (10, 30), 0.8, (255, 255, 255), 2)
 
         right, origin = crop_around(img, p, vw, vh)
         cv2.polylines(
-            right, [np.int32(path[: i + 1] - origin)], False, (0, 255, 255), 4
+            right, [np.int32(path[: i + 1] - origin)], False, COLORS["flown"], 4
         )
-        cv2.polylines(right, [np.int32(f["corners"] - origin)], True, (255, 200, 0), 4)
-        cv2.circle(right, tuple(np.int32(p - origin)), 12, (0, 0, 255), -1)
+        cv2.polylines(
+            right, [np.int32(f["corners"] - origin)], True, COLORS["footprint"], 4
+        )
+        cv2.circle(right, tuple(np.int32(p - origin)), 12, COLORS["route"], -1)
         right = cv2.resize(right, half)
-        cv2.putText(right, "position on map", (10, 30), FONT, 0.8, (0, 255, 255), 2)
+        put_text(right, "position on map", (10, 30), 0.8, (255, 255, 255), 2)
         video.write(np.hstack([left, right]))
     video.release()
 
@@ -721,9 +727,9 @@ def main():
     #    Frame positions from a folder are already accurate to a pixel, so they are drawn as
     #    found (smoothing would pull points off their footprints). A video gives many close
     #    points with more jitter, so it is smoothed (START and FINISH are never moved).
-    path = smooth(
-        np.array([f["center"] for f in found]), window=5 if screen_video else 1
-    )
+    path = np.array([f["center"] for f in found])
+    if screen_video:
+        path = smooth(path, window=5)
 
     # 4. Route image and CSV with positions
     number_text = "label = seconds into video" if screen_video else "number = frame"

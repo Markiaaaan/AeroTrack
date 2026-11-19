@@ -1,2 +1,4 @@
+# If opencv-python is already installed, uninstall it first (pip uninstall opencv-python),
+# otherwise two copies of OpenCV end up in the same environment
 opencv-python-headless>=4.7
 numpy>=1.21
