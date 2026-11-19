@@ -30,14 +30,7 @@ Results go to `output/` (the results for the included data are already there):
 - `output/route.mp4`: zoomed map window following the drone (pass `--video ""` to skip it)
 - `output/route.csv`: position of every frame on the map
 
-Video of the map filmed from a screen (advanced level). `tools/make_test_video.py` makes a test video if you don't have one:
-
-```bash
-python tools/make_test_video.py --map data/map.png --out data/test_flyover.mp4
-python main.py --map data/map.png --from-video data/test_flyover.mp4
-```
-
-Three real phone recordings (no sound) are included as `data/phone_flyover_1.mp4` … `_3.mp4`. Their results (route image, positions and a side-by-side video of the phone view next to the map) are in `output/video_1/` … `video_3/`:
+Video of the map filmed from a screen (advanced level): three real phone recordings (no sound) are included as `data/phone_flyover_1.mp4` … `_3.mp4`. Their results (route image, positions and a side-by-side video of the phone view next to the map) are in `output/video_1/` … `video_3/`:
 
 ```bash
 python main.py --map data/map.png --from-video data/phone_flyover_1.mp4 --out output/video_1/route.png --video output/video_1/route.mp4
