@@ -30,6 +30,13 @@ Results go to `output/` (the results for the included data are already there):
 - `output/route.mp4`: zoomed map window following the drone (pass `--video ""` to skip it)
 - `output/route.csv`: position of every frame on the map
 
+Video of the map filmed from a screen (advanced level). `tools/make_test_video.py` makes a test video if you don't have one:
+
+```bash
+python tools/make_test_video.py --map data/map.png --out data/test_flyover.mp4
+python main.py --map data/map.png --from-video data/test_flyover.mp4
+```
+
 ## How it works
 
 1. **Features.** SIFT finds distinctive points on the map and on each frame.

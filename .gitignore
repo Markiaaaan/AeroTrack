@@ -19,9 +19,8 @@ venv/
 /Task/
 /Materials/
 
-# Task materials, notes and helper tools (kept locally only)
+# Task materials and notes (kept locally only)
 /docs/
-/tools/
 *.pdf
 
 # Generated results and test leftovers
