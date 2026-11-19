@@ -17,6 +17,7 @@ Two kinds of input:
 import argparse
 import csv
 import glob
+import itertools
 import os
 import re
 
@@ -627,7 +628,7 @@ def make_video(img, path, out, view=(800, 450), size=(1280, 720), steps=10):
     # really reaches FINISH; the last position is held for one second (25 frames)
     positions = [
         a + (b - a) * t
-        for a, b in zip(path[:-1], path[1:])
+        for a, b in itertools.pairwise(path)
         for t in np.linspace(0, 1, steps, endpoint=False)
     ]
     positions += [path[-1]] * 25
