@@ -1,4 +1,4 @@
-# Input data and generated outputs (download data separately, see docs/TASK.md)
+# Input data and generated outputs (download data separately, see README)
 data/
 output/
 *.mp4
@@ -18,3 +18,20 @@ venv/
 # Local task materials (kept out of git)
 /Task/
 /Materials/
+
+# Task materials, notes and helper tools (kept locally only)
+/docs/
+/tools/
+*.pdf
+
+# Generated results and test leftovers
+*.avi
+*.csv
+/route*.png
+/route*.jpg
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

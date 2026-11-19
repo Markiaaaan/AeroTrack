@@ -1,7 +1,6 @@
 # AeroTrack: UAV route reconstruction
 
 Finds where each of 50 drone frames was taken on a satellite map and draws the drone's route.
-Task details: [docs/TASK.md](docs/TASK.md).
 
 ## Setup
 
@@ -11,7 +10,7 @@ Needs Python 3.8+.
 pip install -r requirements.txt
 ```
 
-Download the input data (link in [docs/TASK.md](docs/TASK.md)) and put it here.
+Download the input data ([Google Drive](https://drive.google.com/file/d/1h6xfYQfokDo5AzSv1Q-x66HluDpWSh87/view?usp=sharing)) and put it here.
 `data/` is git-ignored, so the images are never committed:
 
 ```
