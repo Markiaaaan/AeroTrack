@@ -1,7 +1,7 @@
-# Input data and generated outputs (download data separately, see README)
-data/
-output/
+# Generated outputs: only the main results in output/ are kept in git
 *.mp4
+!output/route.mp4
+output/video_frames/
 
 # Python
 __pycache__/
@@ -19,14 +19,14 @@ venv/
 /Task/
 /Materials/
 
-# Task materials, notes and helper tools (kept locally only)
+# Task materials and notes (kept locally only)
 /docs/
-/tools/
 *.pdf
 
 # Generated results and test leftovers
 *.avi
 *.csv
+!output/route.csv
 /route*.png
 /route*.jpg
 
