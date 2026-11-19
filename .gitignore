@@ -14,3 +14,7 @@ venv/
 /map.png
 /frames/
 /trajectory.png
+
+# Local task materials (kept out of git)
+/Task/
+/Materials/
