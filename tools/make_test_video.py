@@ -97,8 +97,7 @@ def make_video(args):
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     video = cv2.VideoWriter(args.out, cv2.VideoWriter_fourcc(*"mp4v"), FPS, CAMERA)
     truth_path = os.path.splitext(args.out)[0] + "_truth.csv"
-    truth = csv.writer(open(truth_path, "w", newline=""))
-    truth.writerow(["frame", "x", "y"])
+    truth = [["frame", "x", "y"]]   # true camera position per frame, saved at the end
 
     n = int(args.seconds * FPS)
     cam_rect = np.float32([[0, 0], [CAMERA[0], 0], [CAMERA[0], CAMERA[1]], [0, CAMERA[1]]])
@@ -129,16 +128,21 @@ def make_video(args):
         cx, cy = cv2.perspectiveTransform(
             np.float32([[[CAMERA[0] / 2, CAMERA[1] / 2]]]), np.linalg.inv(H))[0, 0] / 3
         mx, my = (np.array([cx, cy]) - offset) / s
-        truth.writerow([i, f"{mx:.1f}", f"{my:.1f}"])
+        truth.append([i, f"{mx:.1f}", f"{my:.1f}"])
     video.release()
+    with open(truth_path, "w", newline="") as fh:
+        csv.writer(fh).writerows(truth)
     print(f"Saved {args.out} ({n} frames) and {truth_path}")
 
 
 def check(route_csv, truth_csv):
     """Print how far main.py's positions are from the true ones, in map pixels."""
-    truth = {int(r["frame"]): (float(r["x"]), float(r["y"])) for r in csv.DictReader(open(truth_csv))}
+    with open(truth_csv, newline="") as fh:
+        truth = {int(r["frame"]): (float(r["x"]), float(r["y"])) for r in csv.DictReader(fh)}
+    with open(route_csv, newline="") as fh:
+        route = list(csv.DictReader(fh))
     errors, missed = [], 0
-    for r in csv.DictReader(open(route_csv)):
+    for r in route:
         if r["found"] != "1":
             missed += 1
             continue

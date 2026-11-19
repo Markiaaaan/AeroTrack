@@ -4,7 +4,7 @@ Finds where each of 50 drone frames was taken on a satellite map and draws the d
 
 ## Setup
 
-Needs Python 3.8+.
+Needs Python 3.10+.
 
 ```bash
 pip install -r requirements.txt
