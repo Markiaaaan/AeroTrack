@@ -1,7 +1,7 @@
 """UAV route reconstruction.
 
 Finds where each drone frame was taken on a satellite map (SIFT features + homography),
-smooths the resulting route and saves:
+removes wrong positions and saves:
   * an image of the map with the route, numbered points, START / FINISH and frame footprints
   * a video where a zoomed map window follows the drone along the route
   * a CSV file with the position of every frame
@@ -23,24 +23,51 @@ import cv2
 import numpy as np
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
 MAX_MAP_SIDE = 4000      # downscale the map if it is larger than this (speed + memory)
 MAX_FRAME_SIDE = 1000    # downscale video frames to this; phone 4K frames only add noise and time
+SIFT_FEATURES = 20000    # how many SIFT points to keep on the map (the best ones)
+RATIO_TEST = 0.75        # Lowe's ratio test: best match must be clearly better than the 2nd best
+RANSAC_THRESHOLD = 5.0   # a match further than this many map pixels from the model is an outlier
+RETRY_BELOW_SCALE = 0.5  # frame bigger than 2x its footprint -> failed frames are retried smaller
 MIN_MATCHES = 12         # fewer good matches than this -> frame counts as "not found"
 MIN_INLIERS = 8          # fewer matches that agree with the homography -> "not found"
 MIN_INLIER_RATIO = 0.15  # less than this share of matches agree -> the match is probably wrong
 BLUR_RATIO = 0.35        # a video frame this much blurrier than a typical one is skipped
-OUTLIER_FACTOR = 3.0     # a point this many typical steps away from its neighbours is dropped
+OUTLIER_FACTOR = 3.0     # a jump longer than this many typical steps cannot be a real move
+OUTLIER_LOOKAHEAD = 5    # a point may connect to any of the next 5 points (skips over bad ones)
+MIN_STEP = 10.0          # px; so a drone that hovers in place does not make every wobble an outlier
+SIZE_RANGE = (0.5, 2.0)  # a footprint smaller/bigger than this times the typical one is wrong
 MAX_LABELS = 60          # with more points than this only every k-th point gets a number
 MAX_VIDEO_FOOTPRINTS = 10  # a filmed frame covers a big area, so draw only a few footprints
+
+REFERENCE_MAP_SIDE = 3645  # drawing sizes (text, lines) are tuned for a map this wide
+
+# Colours (B, G, R) shared by the route image, its legend and the video
+COLORS = {
+    "footprint": (255, 200, 0),   # light blue
+    "route": (0, 0, 255),         # red
+    "gap": (0, 165, 255),         # orange: dashed where frames are missing or not located
+    "point": (0, 255, 0),         # green
+    "start": (255, 0, 255),       # magenta
+    "finish": (0, 255, 255),      # yellow
+    "flown": (255, 255, 255),     # white: part of the route already flown in the video
+}
 
 # MAGSAC is a newer, more robust version of RANSAC (OpenCV >= 4.5). Fall back to RANSAC if missing.
 ROBUST_METHOD = getattr(cv2, "USAC_MAGSAC", cv2.RANSAC)
 
 
-def read(path, flag=cv2.IMREAD_COLOR):
-    """cv2.imread that also works with non-English characters in Windows paths."""
-    img = cv2.imdecode(np.fromfile(path, np.uint8), flag)
-    if img is None:
+def read(path, flag=cv2.IMREAD_COLOR, required=True):
+    """cv2.imread that also works with non-English characters in Windows paths.
+
+    If the image cannot be read: stop with a message (required=True) or return None.
+    """
+    try:
+        img = cv2.imdecode(np.fromfile(path, np.uint8), flag)
+    except (OSError, cv2.error):          # missing file, a folder, empty or broken file
+        img = None
+    if img is None and required:
         raise SystemExit(f"Cannot read image: {path}")
     return img
 
@@ -70,13 +97,32 @@ def parse_args():
 
 # ---------------------------------------------------------------- input frames
 
+def frame_label(path, i):
+    """Label for a frame: the number in its file name (crop_25.png -> "25"), else its position."""
+    numbers = re.findall(r"\d+", os.path.splitext(os.path.basename(path))[0])
+    return str(int(numbers[-1])) if numbers else str(i + 1)
+
+
 def frames_from_folder(folder):
-    """Load every image in a folder (natural order). Returns a list of frame dicts."""
-    files = sorted(glob.glob(os.path.join(folder, "*")), key=natural_key)
-    if not files:
+    """Load every image in a folder (natural order). Returns a list of frame dicts.
+
+    Other files (notes, Thumbs.db, sub-folders) are ignored; broken images are skipped.
+    """
+    files = sorted((f for f in glob.glob(os.path.join(folder, "*"))
+                    if os.path.isfile(f) and f.lower().endswith(IMAGE_EXTENSIONS)), key=natural_key)
+    frames = []
+    for i, f in enumerate(files):
+        img = read(f, required=False)
+        if img is None:
+            print(os.path.basename(f), "- cannot read this image, skipped")
+            continue
+        label = frame_label(f, i)
+        # "number" is used to see gaps: crop_24 -> crop_26 means frame 25 is missing
+        frames.append({"name": os.path.basename(f), "label": label, "number": int(label),
+                       "image": img})
+    if not frames:
         raise SystemExit(f"No frames found in {folder}")
-    return [{"name": os.path.basename(f), "label": str(i + 1), "image": read(f)}
-            for i, f in enumerate(files)]
+    return frames
 
 
 def sharpness(gray):
@@ -144,6 +190,11 @@ def good_homography(H, corners, w, h, inliers, n_matches):
     quad = np.float32(corners).reshape(-1, 1, 2)
     if not cv2.isContourConvex(quad):           # a real view is never twisted or folded
         return False
+    # A camera cannot see a mirror image: the corners must go round in the same direction
+    # as in the frame (signed area keeps its sign)
+    rect = np.float32([[0, 0], [w, 0], [w, h], [0, h]]).reshape(-1, 1, 2)
+    if cv2.contourArea(quad, oriented=True) * cv2.contourArea(rect, oriented=True) <= 0:
+        return False
     scale = np.sqrt(cv2.contourArea(quad) / (w * h))
     return 0.05 < scale < 20                     # absurd zoom = wrong match
 
@@ -154,34 +205,33 @@ def locate_frames(map_gray, frames, screen_video):
     Adds to every frame dict: "ok", "center": (x, y), "corners": 4x2 array, "inliers",
     all in map pixels.
     """
-    sift = cv2.SIFT_create(nfeatures=20000)
+    sift = cv2.SIFT_create(nfeatures=SIFT_FEATURES)
     kp_m, des_m = sift.detectAndCompute(map_gray, None)
     matcher = cv2.BFMatcher()
 
-    for fr in frames:
-        fr.update(ok=False, center=None, corners=None, inliers=0)
+    def match(fr, img):
+        """Find one frame (gray image img) on the map. Returns True if found."""
         name = fr["name"]
-        img = cv2.cvtColor(fr["image"], cv2.COLOR_BGR2GRAY)
-        if screen_video:
-            img = clean_screen_photo(img)
         kp, des = sift.detectAndCompute(img, None)
         if des is None or len(kp) < 2:
             print(name, "- no features, skipped")
-            continue
+            return False
 
         # Lowe's ratio test keeps only matches that are clearly better than the 2nd best
-        good = [m for m, n in matcher.knnMatch(des, des_m, k=2) if m.distance < 0.75 * n.distance]
+        good = [m for m, n in matcher.knnMatch(des, des_m, k=2)
+                if m.distance < RATIO_TEST * n.distance]
         if len(good) < MIN_MATCHES:
             print(name, f"- only {len(good)} matches, skipped")
-            continue
+            return False
 
         # Homography = how the frame is moved, rotated, scaled and tilted onto the map
         src = np.float32([kp[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
         dst = np.float32([kp_m[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-        H, mask = cv2.findHomography(src, dst, ROBUST_METHOD, 5.0, maxIters=5000, confidence=0.999)
+        H, mask = cv2.findHomography(src, dst, ROBUST_METHOD, RANSAC_THRESHOLD,
+                                     maxIters=5000, confidence=0.999)
         if H is None:
             print(name, "- no homography, skipped")
-            continue
+            return False
 
         # Project the frame's 4 corners and its centre onto the map
         h, w = img.shape
@@ -191,65 +241,229 @@ def locate_frames(map_gray, frames, screen_video):
         inliers = int(mask.sum())
         if not good_homography(H, pr[:4], w, h, inliers, len(good)):
             print(name, f"- unreliable match ({inliers}/{len(good)} inliers), skipped")
-            continue
+            return False
         fr.update(ok=True, center=pr[4], corners=pr[:4], inliers=inliers)
         print(name, f"- ok ({inliers} inliers)")
+        return True
+
+    def gray_of(fr):
+        img = cv2.cvtColor(fr["image"], cv2.COLOR_BGR2GRAY)
+        return clean_screen_photo(img) if screen_video else img
+
+    for fr in frames:
+        fr.update(ok=False, center=None, corners=None, inliers=0)
+        match(fr, gray_of(fr))
+
+    # Second try at half size for the frames that failed, if frames turned out to be much
+    # bigger than their footprint on the map (a frame pixel covers less than half a map pixel).
+    # Shrinking such a frame makes its details look more like the map's details.
+    found = [f for f in frames if f["ok"]]
+    failed = [f for f in frames if not f["ok"]]
+    if found and failed:
+        scale = np.median([footprint_side(f) / np.sqrt(f["image"].shape[0] * f["image"].shape[1])
+                           for f in found])
+        if scale < RETRY_BELOW_SCALE:
+            for fr in failed:
+                print(fr["name"], "- trying again at half size")
+                match(fr, cv2.resize(gray_of(fr), None, fx=0.5, fy=0.5,
+                                     interpolation=cv2.INTER_AREA))
+
+
+def footprint_side(frame):
+    """Size of a frame's footprint on the map: square root of its area, in map pixels."""
+    return np.sqrt(cv2.contourArea(np.float32(frame["corners"])))
+
+
+def drop_wrong_sizes(frames):
+    """Mark as failed any frame whose footprint is much smaller or bigger than the typical one.
+
+    All frames are taken from about the same height, so their footprints have about the same
+    size. A wrong match often squeezes the frame into a few pixels or blows it up.
+    """
+    found = [f for f in frames if f["ok"]]
+    if len(found) < 3:
+        return
+    typical = np.median([footprint_side(f) for f in found])
+    for f in found:
+        ratio = footprint_side(f) / typical
+        if not SIZE_RANGE[0] <= ratio <= SIZE_RANGE[1]:
+            f["ok"] = False
+            print(f["name"], f"- footprint {ratio:.2f}x the typical size, dropped")
 
 
 def drop_outliers(frames):
-    """Mark as failed any point that jumps far away from both of its neighbours."""
+    """Mark as failed any point that does not fit into the route.
+
+    Two points are "linked" if the drone could fly from one to the other: the distance is at
+    most OUTLIER_FACTOR typical steps (more if frames in between are missing). Each point is
+    linked to the next few points, so a bad point does not break the chain. The biggest group
+    of linked points is the route; everything else is a wrong match. Unlike comparing a point
+    with its direct neighbours, this never blames a good point for a bad neighbour.
+    """
     idx = [i for i, r in enumerate(frames) if r["ok"]]
     if len(idx) < 3:
         return
     pts = np.array([frames[i]["center"] for i in idx])
-    # at least 10 px, so a drone that hovers in place does not make every wobble an "outlier"
-    typical_step = max(10.0, np.median(np.linalg.norm(np.diff(pts, axis=0), axis=1)))
-    for k in range(1, len(idx) - 1):
-        expected = (pts[k - 1] + pts[k + 1]) / 2          # where the point "should" be
-        if np.linalg.norm(pts[k] - expected) > OUTLIER_FACTOR * typical_step:
+    # Position of every point in the sequence (file number, or place in the list);
+    # a missing crop_25 makes crop_24 -> crop_26 a jump of 2 steps
+    seq = np.array([frames[i].get("number", i) for i in idx])
+    steps = np.linalg.norm(np.diff(pts, axis=0), axis=1) / np.maximum(1, np.diff(seq))
+    typical_step = np.median(steps)          # the median ignores the few bad jumps
+
+    # Link points that are close enough, then give every point a group number (flood fill)
+    n = len(idx)
+    links = [[] for _ in range(n)]
+    for a in range(n):
+        for b in range(a + 1, min(n, a + 1 + OUTLIER_LOOKAHEAD)):
+            gap = max(1, seq[b] - seq[a])
+            max_jump = OUTLIER_FACTOR * max(MIN_STEP, typical_step * gap)
+            if np.linalg.norm(pts[b] - pts[a]) <= max_jump:
+                links[a].append(b)
+                links[b].append(a)
+    group = [-1] * n
+    for start in range(n):
+        if group[start] >= 0:
+            continue
+        todo = [start]
+        group[start] = start
+        while todo:
+            for b in links[todo.pop()]:
+                if group[b] < 0:
+                    group[b] = start
+                    todo.append(b)
+
+    biggest = max(set(group), key=group.count)
+    for k in range(n):
+        if group[k] != biggest:
             frames[idx[k]]["ok"] = False
-            print(frames[idx[k]]["name"], "- outlier, dropped")
+            print(frames[idx[k]]["name"], "- does not fit the route (outlier), dropped")
 
 
 def smooth(pts, window=3):
-    """Moving average (ends are repeated so the path keeps its length)."""
-    if len(pts) < window:
-        return pts
-    pad = np.pad(pts, ((window // 2, window // 2), (0, 0)), "edge")
-    return np.stack([np.convolve(pad[:, i], np.ones(window) / window, "valid") for i in range(2)], 1)
+    """Moving average that removes small jitter.
+
+    Near the ends the window shrinks (it stays centred on the point), so the first and last
+    points are never moved: START and FINISH stay where the drone really was.
+    """
+    half = window // 2
+    out = np.array(pts, dtype=float)
+    for i in range(len(pts)):
+        r = min(half, i, len(pts) - 1 - i)
+        out[i] = np.mean(pts[i - r:i + r + 1], axis=0)
+    return out
 
 
 # ---------------------------------------------------------------- drawing
 
-def draw_legend(img, number_text):
-    items = [((255, 200, 0), "frame footprint"), ((0, 0, 255), "route"),
-             ((0, 255, 0), f"frame position ({number_text})"),
-             ((255, 0, 0), "START"), ((0, 255, 255), "FINISH")]
-    x, y = 20, 20
-    cv2.rectangle(img, (x, y), (x + 560, y + 40 * len(items) + 20), (0, 0, 0), -1)
-    for i, (color, text) in enumerate(items):
-        cy = y + 35 + 40 * i
-        cv2.circle(img, (x + 25, cy), 10, color, -1)
-        cv2.putText(img, text, (x + 50, cy + 10), FONT, 0.9, (255, 255, 255), 2)
+def put_text(img, text, org, scale, color, thickness):
+    """Text with a thin black outline, so it stays readable on any part of the map."""
+    cv2.putText(img, text, org, FONT, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+    cv2.putText(img, text, org, FONT, scale, color, thickness, cv2.LINE_AA)
+
+
+def dashed_line(img, a, b, color, thickness, dash):
+    """Draw a dashed line from a to b (dash = length of one dash in pixels)."""
+    a, b = np.float32(a), np.float32(b)
+    n = max(1, int(np.linalg.norm(b - a) / dash))
+    for i in range(0, n, 2):                       # every second piece is drawn
+        p, q = a + (b - a) * i / n, a + (b - a) * min(i + 1, n) / n
+        cv2.line(img, tuple(np.int32(p)), tuple(np.int32(q)), color, thickness, cv2.LINE_AA)
+
+
+def draw_legend(img, number_text, avoid, has_gap, s):
+    """Draw the legend box in the image corner that is farthest from the route.
+
+    img: image to draw on; number_text: what the point numbers mean; avoid: Nx2 route
+    points the box should not cover; has_gap: also explain the dashed "gap" line;
+    s: size factor (1.0 for a map REFERENCE_MAP_SIDE pixels wide).
+    """
+    items = [("footprint", "frame footprint"), ("route", "route (in frame order)")]
+    if has_gap:
+        items.append(("gap", "gap: frames missing or not located"))
+    items += [("point", f"frame position ({number_text})"), ("start", "START"),
+              ("finish", "FINISH")]
+
+    font, thick = 0.9 * s, max(1, round(2 * s))
+    row, pad = int(40 * s), int(20 * s)
+    text_w = max(cv2.getTextSize(t, FONT, font, thick)[0][0] for _, t in items)
+    bw, bh = int(70 * s) + text_w + pad, row * len(items) + pad
+    h, w = img.shape[:2]
+
+    # Try the 4 corners; keep the one whose box is farthest from every route point
+    def distance_to_route(x0, y0):
+        dx = np.maximum(0, np.maximum(x0 - avoid[:, 0], avoid[:, 0] - (x0 + bw)))
+        dy = np.maximum(0, np.maximum(y0 - avoid[:, 1], avoid[:, 1] - (y0 + bh)))
+        return np.hypot(dx, dy).min()
+    corners = [(pad, pad), (w - bw - pad, pad), (pad, h - bh - pad), (w - bw - pad, h - bh - pad)]
+    x, y = max(corners, key=lambda c: distance_to_route(*c))
+
+    box = img[max(0, y):y + bh, max(0, x):x + bw]
+    box[:] = box // 4                                # darkened, but the map still shows through
+    r = int(10 * s)
+    for i, (key, text) in enumerate(items):
+        cx, cy = x + int(35 * s), y + pad + row * i + row // 2 - int(5 * s)
+        color = COLORS[key]
+        if key == "footprint":
+            cv2.rectangle(img, (cx - r, cy - r), (cx + r, cy + r), color, thick)
+        elif key == "route":
+            cv2.line(img, (cx - 2 * r, cy), (cx + 2 * r, cy), color, thick * 2)
+        elif key == "gap":
+            dashed_line(img, (cx - 2 * r, cy), (cx + 2 * r, cy), color, thick * 2, r)
+        elif key == "point":
+            cv2.circle(img, (cx, cy), r, color, -1)
+        else:
+            cv2.circle(img, (cx, cy), r, color, thick)
+        put_text(img, text, (cx + int(35 * s), cy + int(10 * s)), font, (255, 255, 255), thick)
 
 
 def draw_route(map_img, found, path, number_text, max_footprints=None):
-    """found: located frame dicts in order; path: their smoothed centres."""
+    """Draw the route on a copy of the map and return it.
+
+    found: located frame dicts in route order; path: the point drawn for each of them
+    (Nx2, map pixels); number_text: legend text saying what the point labels mean;
+    max_footprints: draw at most this many footprints (None = all).
+    Where frames are missing between two points (crop_24 -> crop_26) the line is dashed.
+    """
     img = map_img.copy()
+    s = max(0.4, max(img.shape[:2]) / REFERENCE_MAP_SIDE)   # line and text size factor
+    thin, thick = max(1, round(2 * s)), max(1, round(4 * s))
+
+    # Footprints: thin and half transparent, so they do not hide the route
     k = max(1, int(np.ceil(len(found) / MAX_LABELS)))   # label every k-th point
     kf = max(k, int(np.ceil(len(found) / max_footprints))) if max_footprints else k
-    cv2.polylines(img, [np.int32(f["corners"]) for f in found[::kf]], True, (255, 200, 0), 2)
-    cv2.polylines(img, [np.int32(path)], False, (0, 0, 255), 4)
+    overlay = img.copy()
+    cv2.polylines(overlay, [np.int32(f["corners"]) for f in found[::kf]], True,
+                  COLORS["footprint"], thin, cv2.LINE_AA)
+    img = cv2.addWeighted(overlay, 0.6, img, 0.4, 0)
+
+    # Route: solid between consecutive frames, dashed where frames are missing in between
+    has_gap = False
+    for i in range(1, len(path)):
+        gap = "number" in found[i] and found[i]["number"] - found[i - 1]["number"] > 1
+        if gap:
+            has_gap = True
+            dashed_line(img, path[i - 1], path[i], COLORS["gap"], thick, int(15 * s))
+        else:
+            cv2.line(img, tuple(np.int32(path[i - 1])), tuple(np.int32(path[i])),
+                     COLORS["route"], thick, cv2.LINE_AA)
+
+    # Points with their labels (frame number from the file name)
     for i, (p, f) in enumerate(zip(path, found)):
         x, y = map(int, p)
-        cv2.circle(img, (x, y), 8 if i % k == 0 else 4, (0, 255, 0), -1)
+        cv2.circle(img, (x, y), int((8 if i % k == 0 else 4) * s), COLORS["point"], -1, cv2.LINE_AA)
         if i % k == 0:
-            cv2.putText(img, f["label"], (x + 10, y - 10), FONT, 1, (255, 255, 255), 2)
-    for p, label, color in [(path[0], "START", (255, 0, 0)), (path[-1], "FINISH", (0, 255, 255))]:
+            put_text(img, f["label"], (x + int(10 * s), y - int(10 * s)), s, (255, 255, 255), thin)
+
+    # START and FINISH: a ring around the true first / last position, text kept inside the image
+    for p, label, key in [(path[0], "START", "start"), (path[-1], "FINISH", "finish")]:
         x, y = map(int, p)
-        cv2.circle(img, (x, y), 16, color, 3)
-        cv2.putText(img, label, (x + 20, y + 30), FONT, 1.2, color, 3)
-    draw_legend(img, number_text)
+        cv2.circle(img, (x, y), int(16 * s), COLORS[key], max(1, round(3 * s)), cv2.LINE_AA)
+        tw, th = cv2.getTextSize(label, FONT, 1.2 * s, max(1, round(3 * s)))[0]
+        tx = int(np.clip(x + 20 * s, 0, img.shape[1] - tw))
+        ty = int(np.clip(y + 30 * s + th / 2, th, img.shape[0] - 5))
+        put_text(img, label, (tx, ty), 1.2 * s, COLORS[key], max(1, round(3 * s)))
+
+    draw_legend(img, number_text, np.float32(path), has_gap, s)
     return img
 
 
@@ -262,18 +476,21 @@ def crop_around(img, p, vw, vh):
 
 
 def make_video(img, path, out, view=(800, 450), size=(1280, 720), steps=10):
-    """Zoomed map window that follows the drone; the route flown so far is drawn in yellow."""
+    """Zoomed map window that follows the drone; the route flown so far is drawn in white."""
     vw, vh = min(view[0], img.shape[1]), min(view[1], img.shape[0])
     video = cv2.VideoWriter(out, cv2.VideoWriter_fourcc(*"mp4v"), 25, size)
+    # Points between route points (interpolation), then the last point itself, so the drone
+    # really reaches FINISH; the last position is held for one second (25 frames)
+    positions = [a + (b - a) * t for a, b in zip(path[:-1], path[1:])
+                 for t in np.linspace(0, 1, steps, endpoint=False)]
+    positions += [path[-1]] * 25
     flown = [path[0]]
-    for a, b in zip(path[:-1], path[1:]):
-        for t in np.linspace(0, 1, steps, endpoint=False):   # interpolate between points
-            p = a + (b - a) * t
-            flown.append(p)
-            fr, origin = crop_around(img, p, vw, vh)
-            cv2.polylines(fr, [np.int32(np.array(flown) - origin)], False, (0, 255, 255), 3)
-            cv2.circle(fr, tuple(np.int32(p - origin)), 10, (0, 0, 255), -1)
-            video.write(cv2.resize(fr, size))
+    for p in positions:
+        flown.append(p)
+        fr, origin = crop_around(img, p, vw, vh)
+        cv2.polylines(fr, [np.int32(np.array(flown) - origin)], False, COLORS["flown"], 3)
+        cv2.circle(fr, tuple(np.int32(p - origin)), 10, COLORS["route"], -1)
+        video.write(cv2.resize(fr, size))
     video.release()
 
 
@@ -340,15 +557,18 @@ def main():
 
     # 2. Localise every frame on the map, then remove obviously wrong positions
     locate_frames(map_gray, frames, screen_video)
+    drop_wrong_sizes(frames)
     drop_outliers(frames)
     found = [f for f in frames if f["ok"]]
     print(f"Located {len(found)} of {len(frames)} frames")
     if len(found) < 2:
         raise SystemExit("Too few frames located to draw a route")
 
-    # 3. Smooth the route; points keep their own labels even if some frames were skipped.
-    #    A video gives many close points with more jitter, so it gets a wider window.
-    path = smooth(np.array([f["center"] for f in found]), window=5 if screen_video else 3)
+    # 3. Points keep their own labels even if some frames were skipped.
+    #    Frame positions from a folder are already accurate to a pixel, so they are drawn as
+    #    found (smoothing would pull points off their footprints). A video gives many close
+    #    points with more jitter, so it is smoothed (START and FINISH are never moved).
+    path = smooth(np.array([f["center"] for f in found]), window=5 if screen_video else 1)
 
     # 4. Route image and CSV with positions
     number_text = "label = seconds into video" if screen_video else "number = frame"

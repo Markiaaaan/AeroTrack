@@ -5,6 +5,8 @@ Task details: [docs/TASK.md](docs/TASK.md).
 
 ## Setup
 
+Needs Python 3.8+.
+
 ```bash
 pip install -r requirements.txt
 ```
@@ -34,8 +36,8 @@ Results go to `output/` (also git-ignored):
 1. **Features.** SIFT finds distinctive points on the map and on each frame.
 2. **Matching.** Each frame's points are matched to the map's points, keeping only clear matches (Lowe's ratio test, 0.75).
 3. **Position.** A homography with RANSAC gives how the frame sits on the map: position, rotation and scale. The frame's centre is the drone position and its 4 corners are the footprint.
-4. **Clean-up.** Frames with too few matches are skipped. A point that jumps far from both neighbours is dropped as an outlier. Points keep their real frame numbers, so a gap stays visible.
-5. **Smoothing.** A 3-point moving average removes small jitter.
+4. **Clean-up.** Frames with too few matches are skipped, and so are mirrored or folded footprints. A frame whose footprint is much smaller or bigger than the typical one, or whose point does not fit into the chain of route points, is dropped as an outlier. Points keep their real frame numbers (`crop_25.png` is point 25), and the route is dashed where frames are missing, so a gap stays visible.
+5. **Smoothing.** Frame positions are drawn as found, since they are already accurate to about a pixel. Video input gets a 5-point moving average instead; START and FINISH are never moved.
 6. **Drawing.** The route, points, START / FINISH and footprints are drawn on the map. The video moves a zoomed window along the interpolated route.
 
 Very large maps are downscaled to at most 4000 px on the longest side for speed.
