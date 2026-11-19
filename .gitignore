@@ -1,4 +1,4 @@
-# Input data and generated outputs (download data separately, see docs/TASK.md)
+# Input data and generated outputs (download data separately, see README)
 data/
 output/
 *.mp4
@@ -19,7 +19,9 @@ venv/
 /Task/
 /Materials/
 
-# Task PDF (large, kept locally only; summary in docs/TASK.md)
+# Task materials, notes and helper tools (kept locally only)
+/docs/
+/tools/
 *.pdf
 
 # Generated results and test leftovers
