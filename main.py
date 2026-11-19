@@ -46,8 +46,9 @@ MIN_INLIERS = 8
 MIN_INLIER_RATIO = 0.15
 # A video frame this much blurrier than a typical one is skipped
 BLUR_RATIO = 0.35
-# A jump to the next frame longer than this many typical steps is not a real move (outlier)
-OUTLIER_FACTOR = 3.0
+# A jump to the next frame longer than this many typical steps is not a real move (outlier).
+# 4 leaves room for a quick jerk of a hand-held phone (seen at about 3.5 steps in a real video)
+OUTLIER_FACTOR = 4.0
 # Typical step = median of the steps within this many points before and after
 STEP_WINDOW = 10
 # px; the typical step is at least this, so a hovering drone's wobble is not an "outlier"
@@ -212,6 +213,9 @@ def frames_from_video(path, every, save_dir):
                     "name": f"frame_{index:05d}",
                     "label": f"{index / fps:.1f}s",
                     "index": index,
+                    # place in the sequence of sampled frames; blurry frames dropped below
+                    # still count, so a skipped stretch shows up as a longer gap in time
+                    "step": len(frames),
                     "image": img,
                     "sharpness": sharpness(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)),
                 }
@@ -387,9 +391,10 @@ def drop_outliers(frames):
     if len(idx) < 4:
         return
     pts = np.array([frames[i]["center"] for i in idx])
-    # Position of every point in the sequence (file number, or place in the list);
-    # a missing crop_25 makes crop_24 -> crop_26 two steps apart
-    seq = np.array([frames[i].get("number", i) for i in idx])
+    # Position of every point in the sequence (file number, video sample, or place in the
+    # list); a missing crop_25 makes crop_24 -> crop_26 two steps apart, and skipped blurry
+    # video frames make the drone fly further between two kept ones
+    seq = np.array([frames[i].get("number", frames[i].get("step", i)) for i in idx])
     # Length of each step, per frame (a jump over a missing frame counts as 2 steps)
     steps = np.linalg.norm(np.diff(pts, axis=0), axis=1) / np.maximum(1, np.diff(seq))
     # Typical step near each point: the median of the 2 * STEP_WINDOW steps around it. The
