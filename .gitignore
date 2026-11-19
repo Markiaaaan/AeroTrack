@@ -9,3 +9,8 @@ __pycache__/
 .venv/
 venv/
 .ipynb_checkpoints/
+
+# Data and results that were previously committed at the repo root
+/map.png
+/frames/
+/trajectory.png
