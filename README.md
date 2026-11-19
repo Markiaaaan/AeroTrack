@@ -24,10 +24,11 @@ data/
 python main.py --map data/map.png --frames data/frames
 ```
 
-Results go to `output/` (also git-ignored):
+Results go to `output/` (the results for the included data are already there):
 
 - `output/route.png`: map with the route, numbered points, START / FINISH, frame footprints and a legend
 - `output/route.mp4`: zoomed map window following the drone (pass `--video ""` to skip it)
+- `output/route.csv`: position of every frame on the map
 
 ## How it works
 
