@@ -14,8 +14,11 @@ The input data is included in `data/` (original source: [Google Drive](https://d
 
 ```
 data/
-  map.png        # satellite map
-  frames/        # crop_0.png ... crop_49.png
+  map.png                # satellite map
+  frames/                # crop_0.png ... crop_49.png
+  phone_flyover_1.mp4    # phone videos of the map on a screen (advanced level)
+  phone_flyover_2.mp4
+  phone_flyover_3.mp4
 ```
 
 ## Run

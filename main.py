@@ -10,7 +10,7 @@ Two kinds of input:
   * a folder of frames (basic level):
         python main.py --map data/map.png --frames data/frames
   * a video of the map filmed from a screen with a phone or webcam (advanced level):
-        python main.py --map data/map.png --from-video data/flyover.mp4
+        python main.py --map data/map.png --from-video data/phone_flyover_1.mp4
     For a video it also saves a side-by-side video: camera on the left, map position on the right.
 """
 
@@ -60,8 +60,8 @@ SIZE_RANGE = (0.5, 2.0)
 MAX_LABELS = 60
 # A filmed frame covers a big area, so draw only a few footprints
 MAX_VIDEO_FOOTPRINTS = 10
-
-REFERENCE_MAP_SIDE = 3645  # drawing sizes (text, lines) are tuned for a map this wide
+# Drawing sizes (text, lines) are tuned for a map this wide and scaled for other maps
+REFERENCE_MAP_SIDE = 3645
 
 # Colours (B, G, R) shared by the route image, its legend and the video
 COLORS = {
