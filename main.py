@@ -613,10 +613,14 @@ def crop_around(img, p, vw, vh):
 
 
 def open_video(out, fps, size):
-    """H.264 plays in VS Code and browsers; mp4v is the fallback when no H.264 encoder exists."""
-    video = cv2.VideoWriter(out, cv2.VideoWriter_fourcc(*"avc1"), fps, size)
+    """MP4 video with the mp4v codec, which every OpenCV build can write.
+
+    H.264 ("avc1") is not used: pip builds of OpenCV have no H.264 encoder, and asking for one
+    prints a wall of OpenH264 / FFMPEG errors before falling back anyway.
+    """
+    video = cv2.VideoWriter(out, cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
     if not video.isOpened():
-        video = cv2.VideoWriter(out, cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
+        raise SystemExit(f"Cannot write video: {out}")
     return video
 
 
